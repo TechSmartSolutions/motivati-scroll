@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
-// GitHub Pages serves from /<repo>/, so production builds use that base.
-// Override with BASE_PATH=/ for Netlify or other root hosting.
-export default defineConfig(({ command }) => {
-  const base = command === 'build' ? process.env.BASE_PATH ?? '/motivati-scroll/' : '/';
+// The app is served from the root of the home server (server/server.mjs), same origin as /api and /media.
+// In dev, Vite proxies those paths to the server (API_TARGET, default http://localhost:5183).
+const apiTarget = process.env.API_TARGET ?? 'http://localhost:5183';
+
+export default defineConfig(() => {
+  const base = '/';
   return {
     base,
     plugins: [
@@ -27,10 +29,18 @@ export default defineConfig(({ command }) => {
             { src: 'icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
           ],
         },
-        workbox: { globPatterns: ['**/*.{js,css,html,svg,png,json,webmanifest}'] },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,svg,png,json,webmanifest}'],
+          // Never answer API or media requests with the cached app shell.
+          navigateFallbackDenylist: [/^\/api\//, /^\/media\//],
+        },
       }),
     ],
-    server: { host: true, watch: { usePolling: true } },
-    test: { environment: 'node', include: ['src/**/*.test.ts'] },
+    server: {
+      host: true,
+      watch: { usePolling: true },
+      proxy: { '/api': apiTarget, '/media': apiTarget },
+    },
+    test: { environment: 'node', include: ['src/**/*.test.ts', 'server/**/*.test.mjs'] },
   };
 });

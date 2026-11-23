@@ -1,5 +1,6 @@
 import { h, formatBytes } from './dom';
 import * as db from './db';
+import { deleteMedia, isMediaFile, listMedia, uploadMedia, type MediaItem } from './library';
 import { LEVEL_NAMES, MAX_LEVEL, dateKey, streak, type Progress } from './progress';
 import type { Prompt } from './challenges';
 
@@ -13,8 +14,6 @@ export interface PanelCtx {
   removeCustom(id: string): Promise<void>;
   close(): void;
 }
-
-const isVideoFile = (f: File) => f.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(f.name);
 
 export class Panel {
   readonly root = h('div', { class: 'panel', hidden: true });
@@ -32,20 +31,23 @@ export class Panel {
   }
 
   private async importFiles(files: File[]): Promise<void> {
-    const vids = files.filter(isVideoFile);
-    if (!vids.length) return;
-    void navigator.storage?.persist?.();
+    const media = files.filter(isMediaFile);
+    if (!media.length) return;
     let added = 0;
     let skipped = 0;
-    for (let i = 0; i < vids.length; i++) {
-      this.status = `Importing ${i + 1} of ${vids.length}…`;
+    for (let i = 0; i < media.length; i++) {
+      const label = `Uploading ${i + 1} of ${media.length}`;
+      this.status = `${label}…`;
       this.setStatus();
       try {
-        if (await db.addVideo(vids[i])) added++;
-        else skipped++;
+        const r = await uploadMedia(media[i], (f) => {
+          this.status = `${label}: ${Math.round(f * 100)}%`;
+          this.setStatus();
+        });
+        if (r === 'duplicate') skipped++;
+        else added++;
       } catch (e) {
-        this.status = `Could not store ${vids[i].name}: storage may be full.`;
-        this.setStatus();
+        this.status = `Could not upload ${media[i].name}: ${(e as Error).message}`;
         console.error(e);
         await this.render();
         return;
@@ -61,14 +63,19 @@ export class Panel {
   }
 
   private async render(): Promise<void> {
-    const videos = await db.listVideos();
-    const used = videos.reduce((n, v) => n + v.size, 0);
-    const est = await navigator.storage?.estimate?.().catch(() => undefined);
+    let items: MediaItem[] = [];
+    let offline = false;
+    try {
+      items = await listMedia();
+    } catch {
+      offline = true;
+    }
+    const used = items.reduce((n, v) => n + v.size, 0);
     const p = this.ctx.progress();
     const s = this.ctx.settings();
     const today = p.days[dateKey()] ?? 0;
 
-    const input = h('input', { type: 'file', accept: 'video/*', multiple: true, hidden: true });
+    const input = h('input', { type: 'file', accept: 'video/*,image/*', multiple: true, hidden: true });
     input.addEventListener('change', () => {
       const files = Array.from(input.files ?? []);
       input.value = '';
@@ -91,22 +98,26 @@ export class Panel {
         h('button', { class: 'btn ghost', onclick: () => this.ctx.close() }, 'Close')),
 
       h('section', {},
-        h('h3', {}, `Library (${videos.length})`),
+        h('h3', {}, `Library (${items.length})`),
         h('div', { class: 'row' },
-          h('button', { class: 'btn primary', onclick: () => input.click() }, 'Add videos'),
-          h('span', { class: 'muted' }, `${formatBytes(used)} used${est?.quota ? ` of ~${formatBytes(est.quota)} available` : ''}`)),
+          h('button', { class: 'btn primary', disabled: offline, onclick: () => input.click() }, 'Add videos or images'),
+          h('span', { class: 'muted' }, offline ? 'Server not reachable' : `${formatBytes(used)} on your server`)),
         input,
         h('div', { class: 'status muted' }, this.status),
-        h('ul', { class: 'list' }, ...videos.map((v) =>
-          h('li', {}, h('span', { class: 'name' }, v.name), h('span', { class: 'muted' }, `${formatBytes(v.size)} · seen ${v.seenCount}×`),
+        h('ul', { class: 'list' }, ...items.map((v) =>
+          h('li', {}, h('span', { class: 'name' }, v.name), h('span', { class: 'muted' }, `${v.kind === 'image' ? 'Image' : 'Video'} · ${formatBytes(v.size)}`),
             h('button', { class: 'btn ghost small', onclick: async () => {
-              if (confirm(`Remove "${v.name}" from the app? Your original file is not touched.`)) {
-                await db.deleteVideo(v.id);
+              if (confirm(`Delete "${v.name}" from your server? It disappears on every device.`)) {
+                try {
+                  await deleteMedia(v.id);
+                } catch (e) {
+                  this.status = `Could not delete ${v.name}: ${(e as Error).message}`;
+                }
                 await this.render();
               }
             } }, 'Remove')))),
-        videos.length
-          ? h('button', { class: 'btn ghost small', onclick: () => this.exportList(videos.map((v) => v.name)) }, 'Export list of video names')
+        items.length
+          ? h('button', { class: 'btn ghost small', onclick: () => this.exportList(items.map((v) => v.name)) }, 'Export list of file names')
           : null),
 
       h('section', {},
@@ -123,7 +134,7 @@ export class Panel {
 
       h('section', {},
         h('h3', {}, 'Settings'),
-        num('Challenge every N videos', s.interval, 2, 30, 'interval'),
+        num('Challenge every N videos or images', s.interval, 2, 30, 'interval'),
         num('Completions to level up', s.levelThreshold, 1, 30, 'levelThreshold'),
         h('label', { class: 'row' }, h('span', {}, 'Start videos muted'),
           h('input', { type: 'checkbox', checked: s.muted, onchange: (e: Event) => void this.ctx.updateSettings({ muted: (e.target as HTMLInputElement).checked }) }))),
@@ -149,7 +160,7 @@ export class Panel {
 
   private exportList(names: string[]): void {
     const url = URL.createObjectURL(new Blob([names.join('\n')], { type: 'text/plain' }));
-    const a = h('a', { href: url, download: 'motivati-scroll-videos.txt' });
+    const a = h('a', { href: url, download: 'motivati-scroll-library.txt' });
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }

@@ -1,0 +1,56 @@
+// Client for the home-server media library (served from the same origin as the app).
+
+export interface MediaItem {
+  id: string;
+  name: string;
+  kind: 'video' | 'image';
+  size: number;
+  addedAt: number;
+  url: string;
+}
+
+export class ServerError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+export async function listMedia(): Promise<MediaItem[]> {
+  const res = await fetch('/api/library', { cache: 'no-store' });
+  if (!res.ok) throw new ServerError(`Library request failed (${res.status})`, res.status);
+  return res.json();
+}
+
+export const isMediaFile = (f: File) =>
+  f.type.startsWith('video/') || f.type.startsWith('image/') || /\.(mp4|m4v|mov|webm|jpe?g|png|gif|webp|avif|heic)$/i.test(f.name);
+
+/**
+ * Upload one file. Uses XHR because fetch has no upload progress.
+ * Resolves to the new item, or 'duplicate' if the same name and size is already stored.
+ */
+export function uploadMedia(file: File, onProgress?: (fraction: number) => void): Promise<MediaItem | 'duplicate'> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/media?name=${encodeURIComponent(file.name)}`);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+    xhr.onload = () => {
+      if (xhr.status === 201) return resolve(JSON.parse(xhr.responseText));
+      if (xhr.status === 409) return resolve('duplicate');
+      let msg = `Upload failed (${xhr.status})`;
+      try {
+        msg = JSON.parse(xhr.responseText).error ?? msg;
+      } catch {
+        /* keep default */
+      }
+      reject(new ServerError(msg, xhr.status));
+    };
+    xhr.onerror = () => reject(new ServerError('Could not reach the server', 0));
+    xhr.send(file);
+  });
+}
+
+export async function deleteMedia(id: string): Promise<void> {
+  const res = await fetch(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new ServerError(`Delete failed (${res.status})`, res.status);
+}
