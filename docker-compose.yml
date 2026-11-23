@@ -1,12 +1,30 @@
-# Local dev: `docker compose up --build`, then open http://localhost:5183
+# Home server: `docker compose up -d --build`, then open http://<this-PC's-IP>:5183 from any device on your Wi-Fi.
 # Host port 5183 was checked free. Do NOT use 37291 (reserved for Docker Monitor).
+# Your videos and images are stored in ./media-library next to this file (change MEDIA_DIR to move it).
 services:
-  dev:
+  app:
     build: .
-    container_name: motivati-scroll-dev
+    container_name: motivati-scroll
+    restart: unless-stopped
     ports:
       - "5183:5183"
+    volumes:
+      - ${MEDIA_DIR:-./media-library}:/data
+
+  # Live-reload dev server for working on the app: `docker compose --profile dev up --build`
+  # then open http://localhost:5186. It talks to the `app` service for media.
+  dev:
+    profiles: [dev]
+    build:
+      context: .
+      target: build
+    container_name: motivati-scroll-dev
+    ports:
+      - "5186:5186"
+    environment:
+      API_TARGET: http://app:5183
     volumes:
       - .:/app
       - /app/node_modules
     command: npm run dev
+    depends_on: [app]

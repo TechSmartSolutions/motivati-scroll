@@ -2,16 +2,8 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { defaultProgress, type Progress } from './progress';
 import type { Prompt } from './challenges';
 
-export interface VideoMeta {
-  id: string;
-  name: string;
-  size: number;
-  addedAt: number;
-  seenCount: number;
-}
-
 export interface Settings {
-  /** show a challenge card after this many videos */
+  /** show a challenge card after this many videos or images */
   interval: number;
   /** completions needed at a level before moving up */
   levelThreshold: number;
@@ -21,8 +13,9 @@ export interface Settings {
 export const defaultSettings = (): Settings => ({ interval: 7, levelThreshold: 5, muted: true });
 
 interface Schema extends DBSchema {
-  videos: { key: string; value: VideoMeta };
-  // Blobs live in their own store so listing the library never loads video data.
+  // Media now lives on the home server. These two stores are left from the on-device version
+  // so existing installs open cleanly; nothing reads or writes them any more.
+  videos: { key: string; value: unknown };
   blobs: { key: string; value: Blob };
   kv: { key: string; value: unknown };
 }
@@ -36,42 +29,6 @@ const getDb = () =>
       d.createObjectStore('kv');
     },
   }));
-
-const uid = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-export async function listVideos(): Promise<VideoMeta[]> {
-  return (await (await getDb()).getAll('videos')).sort((a, b) => a.addedAt - b.addedAt);
-}
-
-/** Returns false if an identical file (same name and size) is already stored. */
-export async function addVideo(file: File): Promise<boolean> {
-  const d = await getDb();
-  const existing = await d.getAll('videos');
-  if (existing.some((v) => v.name === file.name && v.size === file.size)) return false;
-  const id = uid();
-  const tx = d.transaction(['videos', 'blobs'], 'readwrite');
-  await Promise.all([
-    tx.objectStore('blobs').put(file, id),
-    tx.objectStore('videos').put({ id, name: file.name, size: file.size, addedAt: Date.now(), seenCount: 0 }),
-    tx.done,
-  ]);
-  return true;
-}
-
-export async function getBlob(id: string): Promise<Blob | undefined> {
-  return (await getDb()).get('blobs', id);
-}
-
-export async function deleteVideo(id: string): Promise<void> {
-  const tx = (await getDb()).transaction(['videos', 'blobs'], 'readwrite');
-  await Promise.all([tx.objectStore('videos').delete(id), tx.objectStore('blobs').delete(id), tx.done]);
-}
-
-export async function markSeen(id: string): Promise<void> {
-  const d = await getDb();
-  const v = await d.get('videos', id);
-  if (v) await d.put('videos', { ...v, seenCount: v.seenCount + 1 });
-}
 
 async function kvGet<T>(key: string, fallback: T): Promise<T> {
   const v = await (await getDb()).get('kv', key);

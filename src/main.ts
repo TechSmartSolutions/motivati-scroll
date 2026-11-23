@@ -73,7 +73,7 @@ function maybeShowInstallBanner(app: HTMLElement): void {
   const standalone = (navigator as unknown as { standalone?: boolean }).standalone === true || matchMedia('(display-mode: standalone)').matches;
   if (!isIos || standalone || localStorage.getItem('installBannerDismissed')) return;
   const banner = h('div', { class: 'install' },
-    h('span', {}, 'Install first: tap Share, then "Add to Home Screen", and open the app from that icon. Videos in a plain Safari tab can be erased by iOS.'),
+    h('span', {}, 'For full screen: tap Share, then "Add to Home Screen", and open the app from that icon.'),
     h('button', { class: 'btn small', onclick: () => {
       localStorage.setItem('installBannerDismissed', '1');
       banner.remove();

@@ -1,6 +1,7 @@
 import { h } from './dom';
 import { ShuffleBag } from './shuffle';
 import * as db from './db';
+import { listMedia, type MediaItem } from './library';
 import { LEVEL_HINTS, LEVEL_NAMES } from './progress';
 import type { Prompt } from './challenges';
 
@@ -15,13 +16,12 @@ export interface FeedDeps {
 }
 
 interface Slide {
-  kind: 'video' | 'challenge';
+  kind: 'media' | 'challenge';
   el: HTMLElement;
-  videoId?: string;
+  item?: MediaItem;
   video?: HTMLVideoElement;
-  url?: string;
+  img?: HTMLImageElement;
   bar?: HTMLElement;
-  loading?: boolean;
   wanted?: boolean;
   userPaused?: boolean;
   prompt?: Prompt;
@@ -38,6 +38,7 @@ export class Feed {
   private slides: Slide[] = [];
   private bag = new ShuffleBag<string>([]);
   private ids: string[] = [];
+  private items = new Map<string, MediaItem>();
   private active = -1;
   private planned = 0;
   private observer: IntersectionObserver;
@@ -71,24 +72,25 @@ export class Feed {
 
   /** Call whenever the library may have changed. Rebuilds only if the set of videos changed. */
   async refresh(): Promise<void> {
-    const ids = (await db.listVideos()).map((v) => v.id);
+    let list: MediaItem[];
+    try {
+      list = await listMedia();
+    } catch (e) {
+      console.error(e);
+      this.teardown();
+      this.ids = [];
+      this.showMessage('Can\'t reach your server', 'Make sure the Motivati-scroll container is running and this device is on your home Wi-Fi.', 'Try again', () => void this.refresh());
+      return;
+    }
+    const ids = list.map((v) => v.id);
+    this.items = new Map(list.map((v) => [v.id, v]));
     const same = ids.length === this.ids.length && ids.every((id) => this.ids.includes(id));
     if (same && this.slides.length) return;
     this.ids = ids;
     this.bag.setItems(ids);
     this.teardown();
     if (!ids.length) {
-      this.scroller.replaceChildren(
-        h(
-          'section',
-          { class: 'slide empty' },
-          h('div', { class: 'empty-card' },
-            h('h1', {}, 'No videos yet'),
-            h('p', {}, 'Add the videos that motivate you. They stay on this device and play in random order.'),
-            h('button', { class: 'btn primary', onclick: () => this.deps.openMenu() }, 'Add videos'),
-          ),
-        ),
-      );
+      this.showMessage('Nothing here yet', 'Add the videos and images that motivate you. They live on your home server, so every device shows the same feed in random order.', 'Add videos or images', () => this.deps.openMenu());
       return;
     }
     this.planned = await db.getSinceChallenge();
@@ -96,6 +98,18 @@ export class Feed {
     this.appendBatch();
     this.scroller.scrollTop = 0;
     await this.setActive(0);
+  }
+
+  private showMessage(title: string, body: string, action: string, onclick: () => void): void {
+    this.scroller.replaceChildren(
+      h('section', { class: 'slide empty' },
+        h('div', { class: 'empty-card' },
+          h('h1', {}, title),
+          h('p', {}, body),
+          h('button', { class: 'btn primary', onclick }, action),
+        ),
+      ),
+    );
   }
 
   applyMute(): void {
@@ -118,8 +132,9 @@ export class Feed {
         continue;
       }
       const id = this.bag.next();
-      if (!id) return;
-      this.addSlide({ kind: 'video', videoId: id, el: h('section', { class: 'slide video' }) });
+      const item = id && this.items.get(id);
+      if (!item) return;
+      this.addSlide({ kind: 'media', item, el: h('section', { class: `slide ${item.kind}` }) });
       this.planned++;
     }
   }
@@ -128,7 +143,7 @@ export class Feed {
     this.slides.push(s);
     this.scroller.append(s.el);
     this.observer.observe(s.el);
-    if (s.kind === 'video') {
+    if (s.item?.kind === 'video') {
       s.el.addEventListener('click', () => this.togglePause(s));
     }
   }
@@ -138,13 +153,12 @@ export class Feed {
     this.active = i;
     this.slides.forEach((s, j) => {
       s.wanted = Math.abs(j - i) <= 1;
-      if (s.wanted) void this.ensure(s, j === i);
+      if (s.wanted) this.ensure(s, j === i);
       else this.release(s);
     });
     if (!changed) return;
     const cur = this.slides[i];
-    if (cur.kind === 'video' && cur.videoId) {
-      void db.markSeen(cur.videoId);
+    if (cur.kind === 'media') {
       void db.saveSinceChallenge(await db.getSinceChallenge().then((n) => n + 1));
     } else if (cur.kind === 'challenge') {
       void db.saveSinceChallenge(0);
@@ -152,7 +166,7 @@ export class Feed {
     if (i >= this.slides.length - 3) this.appendBatch();
   }
 
-  private async ensure(s: Slide, isActive: boolean): Promise<void> {
+  private ensure(s: Slide, isActive: boolean): void {
     if (s.kind === 'challenge') {
       if (!s.filled) this.fillChallenge(s);
       return;
@@ -163,19 +177,25 @@ export class Feed {
       } else s.video.pause();
       return;
     }
-    if (s.loading || !s.videoId) return;
-    s.loading = true;
-    const blob = await db.getBlob(s.videoId);
-    s.loading = false;
-    if (!blob || !s.wanted) {
-      if (!blob) s.el.append(h('div', { class: 'missing' }, 'Video missing. Re-import it from the menu.'));
+    if (s.img || !s.item) return;
+    const missing = (el: HTMLElement) => () => {
+      // Ignore errors from elements this slide has already released.
+      if (s.img !== el && s.video !== el) return;
+      s.el.replaceChildren(h('div', { class: 'missing' }, `Could not load "${s.item?.name}". It may have been removed, or the server is offline.`));
+    };
+    if (s.item.kind === 'image') {
+      const img = h('img', { alt: '', decoding: 'async', draggable: 'false' });
+      img.addEventListener('error', missing(img));
+      img.src = s.item.url;
+      s.img = img;
+      s.el.replaceChildren(img);
       return;
     }
-    s.url = URL.createObjectURL(blob);
     const v = h('video', { playsinline: true, loop: true, preload: 'auto', 'webkit-playsinline': true });
     v.muted = this.deps.muted();
     v.setAttribute('disableRemotePlayback', '');
-    v.src = s.url;
+    v.addEventListener('error', missing(v));
+    v.src = s.item.url;
     s.bar = h('i');
     v.addEventListener('timeupdate', () => {
       if (v.duration && s.bar) s.bar.style.width = `${(v.currentTime / v.duration) * 100}%`;
@@ -194,9 +214,9 @@ export class Feed {
       s.video = undefined;
       s.el.replaceChildren();
     }
-    if (s.url) {
-      URL.revokeObjectURL(s.url);
-      s.url = undefined;
+    if (s.img) {
+      s.img = undefined;
+      s.el.replaceChildren();
     }
     s.userPaused = false;
   }
