@@ -181,7 +181,12 @@ export class Feed {
     const missing = (el: HTMLElement) => () => {
       // Ignore errors from elements this slide has already released.
       if (s.img !== el && s.video !== el) return;
-      s.el.replaceChildren(h('div', { class: 'missing' }, `Could not load "${s.item?.name}". It may have been removed, or the server is offline.`));
+      // MEDIA_ERR_SRC_NOT_SUPPORTED (4) means the file is there but this device cannot decode it.
+      const unsupported = el instanceof HTMLVideoElement && el.error?.code === 4;
+      const why = unsupported
+        ? 'This device cannot play its video format. Re-add it, or run "Fix videos for iPhone" in the menu.'
+        : 'It may have been removed, or the server is offline.';
+      s.el.replaceChildren(h('div', { class: 'missing' }, `Could not play "${s.item?.name}". ${why}`));
     };
     if (s.item.kind === 'image') {
       const img = h('img', { alt: '', decoding: 'async', draggable: 'false' });

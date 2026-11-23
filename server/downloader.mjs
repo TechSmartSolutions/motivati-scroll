@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { kindOf, mediaExt } from './lib.mjs';
+import { makePlayable } from './playable.mjs';
 import { friendlyError, parseFacebookUrl, parseProgress, titleToName } from './downloader-lib.mjs';
 
 const MAX_JOBS_KEPT = 50;
@@ -52,7 +53,8 @@ export class Downloader {
    * @param lib   the Library
    * @param opts  { bin, tmpDir, newId }
    */
-  constructor(lib, { bin = 'yt-dlp', tmpDir } = {}) {
+  constructor(lib, { bin = 'yt-dlp', tmpDir, makePlayable: fix = makePlayable } = {}) {
+    this.fix = fix;
     this.lib = lib;
     this.bin = bin;
     this.tmpDir = tmpDir ?? path.join(lib.dataDir, 'downloads-tmp');
@@ -113,7 +115,8 @@ export class Downloader {
       '--ignore-config', // never pick up cookies or credentials from a config file
       '--no-playlist',
       '--no-mtime',
-      '-f', 'bv*+ba/b',
+      // Prefer H.264 + AAC, which iPhone Safari plays; anything else is converted below.
+      '-f', 'bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[vcodec^=avc1]+ba/bv*+ba/b',
       '--merge-output-format', 'mp4',
       '--newline',
       '--progress', // --print would otherwise silence progress lines
@@ -138,7 +141,19 @@ export class Downloader {
         console.error(`download failed (${job.url}): ${res.err.trim().split('\n').slice(-3).join(' | ')}`);
         throw Object.assign(new Error(friendlyError(res.err, res.code)), { user: true });
       }
-      const [id, title, filepath] = final;
+      const [id, title, rawPath] = final;
+      let filepath = rawPath;
+      try {
+        // Guarantee H.264 + AAC + faststart whatever Facebook served, or iPhone shows "video unavailable".
+        const fixed = await this.fix(rawPath);
+        if (fixed.output !== rawPath) {
+          console.log(`made playable (${fixed.action}: ${fixed.reason}): ${title}`);
+          filepath = fixed.output;
+        }
+      } catch (e) {
+        console.error('could not make video playable', e.message);
+        throw Object.assign(new Error('The video downloaded but could not be converted to a format iPhone plays.'), { user: true });
+      }
       const ext = mediaExt(filepath);
       if (!ext || !kindOf(ext).startsWith('video')) throw Object.assign(new Error('Facebook returned something that is not a video.'), { user: true });
       const key = `fb:${id}`;
@@ -151,7 +166,7 @@ export class Downloader {
         if (dup) return { dup };
         await fs.rename(filepath, dest);
         // `alias` remembers the pasted link form (fb.watch / share links) so pasting it again is caught early.
-        const item = { id: file.split('.')[0], name, kind: kindOf(ext), size, addedAt: Date.now(), file, source: key };
+        const item = { id: file.split('.')[0], name, kind: kindOf(ext), size, addedAt: Date.now(), file, source: key, playableChecked: true };
         if (job.key !== key) item.alias = job.key;
         items.push(item);
         return { item };

@@ -72,7 +72,7 @@ describe('Downloader', () => {
     await writeFile(bin, STUB);
     await chmod(bin, 0o755);
     lib = await new Library(path.join(dir, 'data')).init();
-    dl = await new Downloader(lib, { bin }).init();
+    dl = await new Downloader(lib, { bin, makePlayable: async (f) => ({ action: 'none', reason: 'stub', output: f }) }).init();
   });
   afterEach(() => rm(dir, { recursive: true, force: true }));
   const settle = async () => { await dl.queue; };

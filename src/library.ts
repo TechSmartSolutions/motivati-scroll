@@ -88,6 +88,10 @@ export async function updateDownloader(): Promise<{ ok: boolean; before: string 
   return jsonOrThrow(await fetch('/api/downloader/update', { method: 'POST' }), 'Update failed');
 }
 
+export async function repairVideos(): Promise<{ started: boolean }> {
+  return jsonOrThrow(await fetch('/api/library/repair', { method: 'POST' }), 'Could not start the fix');
+}
+
 export async function downloaderVersion(): Promise<string | null> {
   return (await jsonOrThrow<{ version: string | null }>(await fetch('/api/downloader', { cache: 'no-store' }), 'Version check failed')).version;
 }
