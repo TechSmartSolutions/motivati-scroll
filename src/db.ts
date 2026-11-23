@@ -10,7 +10,7 @@ export interface Settings {
   muted: boolean;
 }
 
-export const defaultSettings = (): Settings => ({ interval: 7, levelThreshold: 5, muted: true });
+export const defaultSettings = (): Settings => ({ interval: 7, levelThreshold: 5, muted: false });
 
 interface Schema extends DBSchema {
   // Media now lives on the home server. These two stores are left from the on-device version
@@ -36,8 +36,17 @@ async function kvGet<T>(key: string, fallback: T): Promise<T> {
 }
 const kvSet = async (key: string, value: unknown) => void (await (await getDb()).put('kv', value, key));
 
-export const getSettings = async (): Promise<Settings> => ({ ...defaultSettings(), ...(await kvGet<Partial<Settings>>('settings', {})) });
-export const saveSettings = (s: Settings) => kvSet('settings', s);
+// Settings version 2: sound is on by default. Older saved settings had muted:true as the default,
+// so a missing/older version ignores the stored value once. Turning it off again in the menu sticks.
+const SETTINGS_VERSION = 2;
+type StoredSettings = Partial<Settings> & { v?: number };
+
+export const getSettings = async (): Promise<Settings> => {
+  const { v, ...saved } = await kvGet<StoredSettings>('settings', {});
+  if (v !== SETTINGS_VERSION) delete saved.muted;
+  return { ...defaultSettings(), ...saved };
+};
+export const saveSettings = (s: Settings) => kvSet('settings', { ...s, v: SETTINGS_VERSION });
 export const getProgress = async (): Promise<Progress> => ({ ...defaultProgress(), ...(await kvGet<Partial<Progress>>('progress', {})) });
 export const saveProgress = (p: Progress) => kvSet('progress', p);
 export const getCustomPrompts = () => kvGet<Prompt[]>('customPrompts', []);

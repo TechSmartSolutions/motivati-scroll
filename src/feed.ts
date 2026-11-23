@@ -67,6 +67,13 @@ export class Feed {
       if (document.hidden) s.video.pause();
       else if (!s.userPaused) void this.play(s.video);
     });
+    // touchend/click count as user activation on iOS; pointerdown does not.
+    for (const type of ['touchend', 'click'] as const) {
+      document.addEventListener(type, (e) => {
+        // The mute button has its own handler; don't let it unlock then immediately re-toggle.
+        if (this.soundBlocked && !(e.target as Element | null)?.closest?.('.fab.mute')) this.unlockSound();
+      }, { capture: true, passive: true });
+    }
     this.updateMuteIcon();
   }
 
@@ -113,8 +120,30 @@ export class Feed {
   }
 
   applyMute(): void {
-    for (const s of this.slides) if (s.video) s.video.muted = this.deps.muted();
+    for (const s of this.slides) if (s.video) s.video.muted = this.effectiveMuted();
     this.updateMuteIcon();
+  }
+
+  /**
+   * The user's preference is unmuted by default, but a browser may refuse sound before the first
+   * touch (e.g. launching from the home screen). `soundBlocked` plays muted until the first
+   * gesture, then restores the preference, without ever changing the saved setting.
+   */
+  private soundBlocked = false;
+  private justUnlocked = false;
+
+  private effectiveMuted(): boolean {
+    return this.deps.muted() || this.soundBlocked;
+  }
+
+  private unlockSound(): void {
+    if (!this.soundBlocked) return;
+    this.soundBlocked = false;
+    this.justUnlocked = true;
+    setTimeout(() => (this.justUnlocked = false), 500);
+    this.applyMute();
+    const s = this.slides[this.active];
+    if (s?.video && !s.userPaused) void this.play(s.video);
   }
 
   private teardown(): void {
@@ -197,7 +226,7 @@ export class Feed {
       return;
     }
     const v = h('video', { playsinline: true, loop: true, preload: 'auto', 'webkit-playsinline': true });
-    v.muted = this.deps.muted();
+    v.muted = this.effectiveMuted();
     v.setAttribute('disableRemotePlayback', '');
     v.addEventListener('error', missing(v));
     v.src = s.item.url;
@@ -230,9 +259,10 @@ export class Feed {
     try {
       await v.play();
     } catch {
-      // Browsers can refuse unmuted autoplay; fall back to muted playback.
+      // Browsers can refuse unmuted autoplay; play muted until the first touch, then unmute.
       if (!v.muted) {
-        this.deps.setMuted(true);
+        this.soundBlocked = true;
+        this.applyMute();
         try {
           await v.play();
         } catch {
@@ -243,7 +273,7 @@ export class Feed {
   }
 
   private togglePause(s: Slide): void {
-    if (!s.video) return;
+    if (!s.video || this.justUnlocked) return; // the tap that restored sound shouldn't also pause
     if (s.video.paused) {
       s.userPaused = false;
       void this.play(s.video);
@@ -256,6 +286,7 @@ export class Feed {
   }
 
   private toggleMute(): void {
+    if (this.soundBlocked) return this.unlockSound();
     this.deps.setMuted(!this.deps.muted());
     const s = this.slides[this.active];
     // The tap is a user gesture, so unmuting here is allowed on iOS.
@@ -263,7 +294,7 @@ export class Feed {
   }
 
   private updateMuteIcon(): void {
-    this.muteBtn.textContent = this.deps.muted() ? '🔇' : '🔊';
+    this.muteBtn.textContent = this.effectiveMuted() ? '🔇' : '🔊';
   }
 
   private goNext(s: Slide): void {

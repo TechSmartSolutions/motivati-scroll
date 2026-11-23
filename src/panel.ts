@@ -210,7 +210,7 @@ export class Panel {
         h('h3', {}, 'Settings'),
         num('Challenge every N videos or images', s.interval, 2, 30, 'interval'),
         num('Completions to level up', s.levelThreshold, 1, 30, 'levelThreshold'),
-        h('label', { class: 'row' }, h('span', {}, 'Start videos muted'),
+        h('label', { class: 'row' }, h('span', {}, 'Start videos muted (sound is on by default)'),
           h('input', { type: 'checkbox', checked: s.muted, onchange: (e: Event) => void this.ctx.updateSettings({ muted: (e.target as HTMLInputElement).checked }) }))),
 
       h('section', {},
