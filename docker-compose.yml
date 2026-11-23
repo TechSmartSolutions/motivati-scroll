@@ -1,0 +1,12 @@
+# Local dev: `docker compose up --build`, then open http://localhost:5183
+# Host port 5183 was checked free. Do NOT use 37291 (reserved for Docker Monitor).
+services:
+  dev:
+    build: .
+    container_name: motivati-scroll-dev
+    ports:
+      - "5183:5183"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
