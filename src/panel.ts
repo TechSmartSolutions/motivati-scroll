@@ -1,6 +1,6 @@
 import { h, formatBytes } from './dom';
 import * as db from './db';
-import { deleteMedia, isMediaFile, listDownloads, listMedia, submitLinks, updateDownloader, uploadMedia, type DownloadJob, type MediaItem } from './library';
+import { deleteMedia, isMediaFile, listDownloads, listMedia, submitLinks, repairVideos, updateDownloader, uploadMedia, type DownloadJob, type MediaItem } from './library';
 import { LEVEL_NAMES, MAX_LEVEL, dateKey, streak, type Progress } from './progress';
 import type { Prompt } from './challenges';
 
@@ -165,7 +165,16 @@ export class Panel {
             this.root.querySelector('.link-status')!.textContent = this.linkStatus;
             b.disabled = false;
             b.textContent = 'Update downloader';
-          } }, 'Update downloader')),
+          } }, 'Update downloader'),
+          h('button', { class: 'btn ghost small', disabled: offline, onclick: async () => {
+            try {
+              const r = await repairVideos();
+              this.linkStatus = r.started ? 'Checking downloaded videos for iPhone. Converting can take a few minutes; reload the feed afterwards.' : 'Already checking videos.';
+            } catch (err) {
+              this.linkStatus = (err as Error).message;
+            }
+            this.root.querySelector('.link-status')!.textContent = this.linkStatus;
+          } }, 'Fix videos for iPhone')),
         h('div', { class: 'link-status muted' }, this.linkStatus),
         this.dlBox,
         h('div', { class: 'muted' }, 'Public Facebook reels only. The server is not logged in to Facebook, so private reels fail; upload those instead.'),

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Downloader } from './downloader.mjs';
 import { extractUrls } from './downloader-lib.mjs';
+import { repairLibrary } from './repair.mjs';
 import { Library, MEDIA_TYPES, cleanName, kindOf, mediaExt, parseRange } from './lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,11 @@ const downloader = await new Downloader(lib, { bin: process.env.YTDLP_BIN ?? 'yt
 if (process.env.YTDLP_AUTO_UPDATE !== '0') {
   downloader.update().then((r) => console.log(`yt-dlp ${r.after ?? 'not found'}${r.updated ? ` (updated from ${r.before})` : ''}`));
 }
+
+// Convert downloaded videos that iPhone cannot play (one at a time, in the background).
+let repairing;
+const startRepair = () => (repairing ??= repairLibrary(lib).finally(() => (repairing = undefined)));
+if (process.env.AUTO_REPAIR !== '0') startRepair().catch((e) => console.error('repair failed', e));
 
 const toClient = (item) => ({
   id: item.id,
@@ -173,6 +179,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/downloader' && req.method === 'GET') return sendJson(res, 200, { version: await downloader.version() });
     if (p === '/api/downloader/update' && req.method === 'POST') return sendJson(res, 200, await downloader.update());
+    if (p === '/api/library/repair' && req.method === 'POST') {
+      const wasRunning = !!repairing;
+      startRepair().catch((e) => console.error('repair failed', e));
+      return sendJson(res, 202, { started: !wasRunning });
+    }
     const del = /^\/api\/media\/([\w-]+)$/.exec(p);
     if (del && req.method === 'DELETE') return await remove(res, del[1]);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
