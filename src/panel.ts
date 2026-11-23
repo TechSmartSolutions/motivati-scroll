@@ -1,6 +1,6 @@
 import { h, formatBytes } from './dom';
 import * as db from './db';
-import { deleteMedia, isMediaFile, listMedia, uploadMedia, type MediaItem } from './library';
+import { deleteMedia, isMediaFile, listDownloads, listMedia, submitLinks, updateDownloader, uploadMedia, type DownloadJob, type MediaItem } from './library';
 import { LEVEL_NAMES, MAX_LEVEL, dateKey, streak, type Progress } from './progress';
 import type { Prompt } from './challenges';
 
@@ -18,6 +18,10 @@ export interface PanelCtx {
 export class Panel {
   readonly root = h('div', { class: 'panel', hidden: true });
   private status = '';
+  private linkStatus = '';
+  private poll?: number;
+  private sawActive = false;
+  private dlBox = h('ul', { class: 'list' });
 
   constructor(private ctx: PanelCtx) {}
 
@@ -57,6 +61,46 @@ export class Panel {
     await this.render();
   }
 
+  private paintDownloads(jobs: DownloadJob[]): void {
+    const label = (j: DownloadJob) =>
+      j.status === 'downloading' ? `Downloading ${Math.round(j.progress * 100)}%` : j.status === 'queued' ? 'Waiting' : j.message;
+    this.dlBox.replaceChildren(...jobs.slice(-5).reverse().map((j) =>
+      h('li', {}, h('span', { class: 'name' }, j.url.replace(/^https:\/\/(www\.)?/, '')), h('span', { class: 'muted' }, label(j)))));
+  }
+
+  /** Poll the server while any download is running; refresh the library list once they finish. */
+  private async watchDownloads(): Promise<void> {
+    window.clearTimeout(this.poll);
+    let jobs: DownloadJob[];
+    try {
+      jobs = await listDownloads();
+    } catch {
+      return;
+    }
+    this.paintDownloads(jobs);
+    if (jobs.some((j) => j.status === 'queued' || j.status === 'downloading')) {
+      this.sawActive = true;
+      this.poll = window.setTimeout(() => void this.watchDownloads(), 1500);
+    } else if (this.sawActive && !this.root.hidden) {
+      this.sawActive = false;
+      this.linkStatus = '';
+      await this.render();
+    }
+  }
+
+  private async addLink(text: string, offline: boolean): Promise<void> {
+    if (offline || !text.trim()) return;
+    try {
+      this.paintDownloads(await submitLinks(text));
+      this.linkStatus = 'Started. Large reels can take a minute.';
+      this.root.querySelector('.link-status')!.textContent = this.linkStatus;
+      void this.watchDownloads();
+    } catch (e) {
+      this.linkStatus = (e as Error).message;
+      this.root.querySelector('.link-status')!.textContent = this.linkStatus;
+    }
+  }
+
   private setStatus(): void {
     const el = this.root.querySelector('.status');
     if (el) el.textContent = this.status;
@@ -75,6 +119,7 @@ export class Panel {
     const s = this.ctx.settings();
     const today = p.days[dateKey()] ?? 0;
 
+    const linkInput = h('input', { type: 'url', placeholder: 'Paste a public Facebook reel link', class: 'link-input', autocomplete: 'off' });
     const input = h('input', { type: 'file', accept: 'video/*,image/*', multiple: true, hidden: true });
     input.addEventListener('change', () => {
       const files = Array.from(input.files ?? []);
@@ -104,6 +149,26 @@ export class Panel {
           h('span', { class: 'muted' }, offline ? 'Server not reachable' : `${formatBytes(used)} on your server`)),
         input,
         h('div', { class: 'status muted' }, this.status),
+        linkInput,
+        h('div', { class: 'row' },
+          h('button', { class: 'btn small', disabled: offline, onclick: () => void this.addLink(linkInput.value, offline).then(() => (linkInput.value = '')) }, 'Download reel'),
+          h('button', { class: 'btn ghost small', disabled: offline, onclick: async (e: Event) => {
+            const b = e.target as HTMLButtonElement;
+            b.disabled = true;
+            b.textContent = 'Updating…';
+            try {
+              const r = await updateDownloader();
+              this.linkStatus = !r.ok ? 'Update failed. Check the server logs.' : r.updated ? `Downloader updated to ${r.after}.` : `Downloader is up to date (${r.after}).`;
+            } catch (err) {
+              this.linkStatus = (err as Error).message;
+            }
+            this.root.querySelector('.link-status')!.textContent = this.linkStatus;
+            b.disabled = false;
+            b.textContent = 'Update downloader';
+          } }, 'Update downloader')),
+        h('div', { class: 'link-status muted' }, this.linkStatus),
+        this.dlBox,
+        h('div', { class: 'muted' }, 'Public Facebook reels only. The server is not logged in to Facebook, so private reels fail; upload those instead.'),
         h('ul', { class: 'list' }, ...items.map((v) =>
           h('li', {}, h('span', { class: 'name' }, v.name), h('span', { class: 'muted' }, `${v.kind === 'image' ? 'Image' : 'Video'} · ${formatBytes(v.size)}`),
             h('button', { class: 'btn ghost small', onclick: async () => {
@@ -156,6 +221,7 @@ export class Panel {
     const top = this.root.scrollTop;
     this.root.replaceChildren(...sections);
     this.root.scrollTop = top;
+    void this.watchDownloads();
   }
 
   private exportList(names: string[]): void {

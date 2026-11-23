@@ -7,6 +7,8 @@ import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Downloader } from './downloader.mjs';
+import { extractUrls } from './downloader-lib.mjs';
 import { Library, MEDIA_TYPES, cleanName, kindOf, mediaExt, parseRange } from './lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -27,6 +29,11 @@ const STATIC_TYPES = {
 };
 
 const lib = await new Library(DATA_DIR).init();
+const downloader = await new Downloader(lib, { bin: process.env.YTDLP_BIN ?? 'yt-dlp' }).init();
+// Facebook changes often and yt-dlp breaks with it, so refresh it on every start (best effort, in the background).
+if (process.env.YTDLP_AUTO_UPDATE !== '0') {
+  downloader.update().then((r) => console.log(`yt-dlp ${r.after ?? 'not found'}${r.updated ? ` (updated from ${r.before})` : ''}`));
+}
 
 const toClient = (item) => ({
   id: item.id,
@@ -74,6 +81,21 @@ async function upload(req, res, url) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     if (!res.headersSent) sendJson(res, e.status ?? 500, { error: e.status ? e.message : 'Upload failed' });
     if (!e.status) console.error('upload failed', e);
+  }
+}
+
+async function readJson(req, limit = 64 * 1024) {
+  let size = 0;
+  const chunks = [];
+  for await (const c of req) {
+    size += c.length;
+    if (size > limit) throw Object.assign(new Error('Request too large'), { status: 413 });
+    chunks.push(c);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  } catch {
+    throw Object.assign(new Error('Bad JSON'), { status: 400 });
   }
 }
 
@@ -141,6 +163,16 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
     if (p === '/api/library' && req.method === 'GET') return sendJson(res, 200, lib.list().map(toClient));
     if (p === '/api/media' && req.method === 'POST') return await upload(req, res, url);
+    if (p === '/api/downloads' && req.method === 'GET') return sendJson(res, 200, downloader.list());
+    if (p === '/api/downloads' && req.method === 'POST') {
+      const body = await readJson(req);
+      // Accepts { urls: [...] } (any source) or { text } (pasted text with one or more links).
+      const urls = Array.isArray(body.urls) ? body.urls.map(String).slice(0, 25) : extractUrls(body.text).slice(0, 25);
+      if (!urls.length) return sendJson(res, 400, { error: 'Paste a Facebook reel link.' });
+      return sendJson(res, 202, downloader.enqueue(urls));
+    }
+    if (p === '/api/downloader' && req.method === 'GET') return sendJson(res, 200, { version: await downloader.version() });
+    if (p === '/api/downloader/update' && req.method === 'POST') return sendJson(res, 200, await downloader.update());
     const del = /^\/api\/media\/([\w-]+)$/.exec(p);
     if (del && req.method === 'DELETE') return await remove(res, del[1]);
     if (p.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
@@ -150,8 +182,8 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/media/')) return sendJson(res, 404, { error: 'Not found' });
     await serveStatic(req, res, p);
   } catch (e) {
-    console.error(e);
-    if (!res.headersSent) sendJson(res, 500, { error: 'Server error' });
+    if (!e.status) console.error(e);
+    if (!res.headersSent) sendJson(res, e.status ?? 500, { error: e.status ? e.message : 'Server error' });
     else res.destroy();
   }
 });

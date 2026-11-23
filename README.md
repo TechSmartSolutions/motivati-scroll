@@ -5,6 +5,7 @@ with a "get out of your comfort zone" challenge card every N items.
 
 - Your media lives on a home server (this repo's Docker container), so every device on your Wi-Fi shows the same feed.
 - Add or remove videos and images from the app menu. Files are stored as plain files in `./media-library`.
+- Paste a public Facebook reel link in the menu and the server downloads it into the library (yt-dlp + ffmpeg inside the Docker image). The downloader is never logged in to Facebook, so private or login-walled reels fail on purpose; upload those instead. yt-dlp updates itself on container start, and "Update downloader" in the menu does it on demand. Set `YTDLP_AUTO_UPDATE=0` to skip the start-up update.
 - Settings, level progress and custom challenges are still stored per device (in the browser).
 - No login: anyone on your Wi-Fi who can reach the server can view, add and delete media. Do not expose the port to the internet.
 

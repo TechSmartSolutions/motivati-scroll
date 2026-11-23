@@ -81,3 +81,5 @@ textarea { width: 100%; }
 input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--accent); }
 
 .install { position: absolute; left: 12px; right: 12px; bottom: calc(var(--safe-b) + 16px); z-index: 30; display: flex; gap: 12px; align-items: center; background: #26263a; padding: 12px 14px; border-radius: 14px; font-size: 13px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.link-input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 12px; border: 1px solid #ffffff22; background: var(--card); color: inherit; font: inherit; margin-top: 8px; }
+.link-status:empty { display: none; }
