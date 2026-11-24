@@ -10,6 +10,10 @@ import { fileURLToPath } from 'node:url';
 import { Downloader } from './downloader.mjs';
 import { extractUrls } from './downloader-lib.mjs';
 import { repairLibrary } from './repair.mjs';
+import { Transcriber } from './transcriber.mjs';
+import { Suggester } from './suggester.mjs';
+import { Goals } from './goals.mjs';
+import { cleanTags, parseTagList } from './tags.mjs';
 import { Library, MEDIA_TYPES, cleanName, kindOf, mediaExt, parseRange } from './lib.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +45,39 @@ let repairing;
 const startRepair = () => (repairing ??= repairLibrary(lib).finally(() => (repairing = undefined)));
 if (process.env.AUTO_REPAIR !== '0') startRepair().catch((e) => console.error('repair failed', e));
 
+// Transcribe every video in the background with a local Whisper model (WHISPER=0 turns it off).
+// Env: WHISPER_MODEL (small), WHISPER_THREADS (6), PYTHON_BIN (python3; /opt/whisper/bin/python in Docker).
+const transcriber = await new Transcriber(lib, {
+  enabled: process.env.WHISPER !== '0',
+  python: process.env.PYTHON_BIN ?? 'python3',
+  script: path.join(here, 'transcribe.py'),
+  model: process.env.WHISPER_MODEL ?? 'small',
+  threads: Number(process.env.WHISPER_THREADS ?? 6),
+}).init();
+transcriber.kick();
+
+const goals = await new Goals(DATA_DIR).init();
+
+// Claude drafts SUGGESTED challenges from finished transcripts. Off unless ANTHROPIC_API_KEY is set.
+// Env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL (claude-opus-5-5; e.g. claude-haiku-5-5 is much cheaper).
+const suggester = await new Suggester(lib, transcriber, {
+  goals,
+  apiKey: process.env.ANTHROPIC_API_KEY?.trim() || undefined,
+  model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
+}).init();
+const orphans = await suggester.dropOrphans();
+if (orphans) console.log(`hid ${orphans} card${orphans > 1 ? 's' : ''} whose video was deleted`);
+console.log(suggester.enabled ? `Claude suggestions on (${suggester.model})` : 'Claude suggestions off (no ANTHROPIC_API_KEY)');
+
+// Cheap in-memory scan: picks up new uploads/downloads and videos the repair step has finished with.
+setInterval(() => {
+  transcriber.kick();
+  suggester.kick();
+}, 30_000).unref();
+suggester.kick();
+
+const goalIds = () => goals.get().goals.map((g) => g.id);
+
 const toClient = (item) => ({
   id: item.id,
   name: item.name,
@@ -48,6 +85,9 @@ const toClient = (item) => ({
   size: item.size,
   addedAt: item.addedAt,
   url: `/media/${item.file}`,
+  favorite: !!item.favorite,
+  tags: cleanTags(item.tags, goalIds()),
+  ...(item.kind === 'video' ? { transcript: item.transcript ?? 'pending' } : {}),
 });
 
 function sendJson(res, status, body) {
@@ -74,6 +114,8 @@ async function upload(req, res, url) {
       if (dup) return { dup };
       await fs.rename(tmp, dest);
       const it = { id, name, kind: kindOf(ext), size, addedAt: Date.now(), file };
+      const tags = cleanTags(parseTagList(url.searchParams.get('tags')), goalIds());
+      if (tags.length) it.tags = tags;
       items.push(it);
       return { it };
     });
@@ -83,6 +125,7 @@ async function upload(req, res, url) {
     }
     console.log(`added ${name} (${size} bytes)`);
     sendJson(res, 201, toClient(item.it));
+    transcriber.kick();
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     if (!res.headersSent) sendJson(res, e.status ?? 500, { error: e.status ? e.message : 'Upload failed' });
@@ -112,7 +155,9 @@ async function remove(res, id) {
   });
   if (!removed) return sendJson(res, 404, { error: 'Not found' });
   await fs.rm(lib.fileFor(removed), { force: true });
-  console.log(`removed ${removed.name}`);
+  await transcriber.remove(removed.id);
+  const cards = await suggester.dropVideo(removed.id); // its challenge cards go with it
+  console.log(`removed ${removed.name}${cards ? ` and ${cards} card${cards > 1 ? 's' : ''}` : ''}`);
   res.writeHead(204).end();
 }
 
@@ -177,12 +222,75 @@ const server = http.createServer(async (req, res) => {
       if (!urls.length) return sendJson(res, 400, { error: 'Paste a Facebook reel link.' });
       return sendJson(res, 202, downloader.enqueue(urls));
     }
+    if (p === '/api/transcriber' && req.method === 'GET') return sendJson(res, 200, transcriber.status());
+    if (p === '/api/goals' && req.method === 'GET') return sendJson(res, 200, goals.get());
+    if (p === '/api/goals' && req.method === 'PUT') {
+      const saved = await goals.set(await readJson(req));
+      // A goal that was removed must not linger as a tag on videos.
+      const keep = new Set(saved.goals.map((g) => g.id));
+      await lib.mutate(async (items) => {
+        for (const it of items) {
+          if (!it.tags) continue;
+          const left = it.tags.filter((t) => keep.has(t));
+          if (left.length === it.tags.length) continue;
+          if (left.length) it.tags = left; else delete it.tags;
+        }
+      });
+      return sendJson(res, 200, saved);
+    }
+    if (p === '/api/suggestions' && req.method === 'GET') return sendJson(res, 200, { status: suggester.status(), items: suggester.list('new') });
+    if (p === '/api/challenges' && req.method === 'GET') return sendJson(res, 200, suggester.accepted());
+    if (p === '/api/challenges/regenerate' && req.method === 'POST') {
+      try {
+        return sendJson(res, 200, await suggester.regenerate((await readJson(req)).ids));
+      } catch (e) {
+        if (e.status) return sendJson(res, e.status, { error: e.message });
+        console.error('regenerate failed', e);
+        return sendJson(res, 502, { error: `Claude call failed: ${e.message}` });
+      }
+    }
+    const sg = /^\/api\/suggestions\/([\w-]+)\/(accept|dismiss)$/.exec(p);
+    if (sg && req.method === 'POST') {
+      const ok = await suggester[sg[2]](sg[1]);
+      return ok ? sendJson(res, 200, { ok: true }) : sendJson(res, 404, { error: 'Not found' });
+    }
+    const tr = /^\/api\/transcripts\/([\w-]+)$/.exec(p);
+    if (tr && req.method === 'GET') {
+      const t = await transcriber.read(tr[1]);
+      return t ? sendJson(res, 200, t) : sendJson(res, 404, { error: 'No transcript yet' });
+    }
     if (p === '/api/downloader' && req.method === 'GET') return sendJson(res, 200, { version: await downloader.version() });
     if (p === '/api/downloader/update' && req.method === 'POST') return sendJson(res, 200, await downloader.update());
     if (p === '/api/library/repair' && req.method === 'POST') {
       const wasRunning = !!repairing;
       startRepair().catch((e) => console.error('repair failed', e));
       return sendJson(res, 202, { started: !wasRunning });
+    }
+    const fav = /^\/api\/media\/([\w-]+)\/favorite$/.exec(p);
+    if (fav && req.method === 'PUT') {
+      const body = await readJson(req);
+      const favorite = body.favorite === true;
+      const found = await lib.mutate(async (items) => {
+        const it = items.find((x) => x.id === fav[1]);
+        if (!it) return false;
+        if (favorite) it.favorite = true;
+        else delete it.favorite;
+        return true;
+      });
+      return found ? sendJson(res, 200, { id: fav[1], favorite }) : sendJson(res, 404, { error: 'Not found' });
+    }
+    const tg = /^\/api\/media\/([\w-]+)\/tags$/.exec(p);
+    if (tg && req.method === 'PUT') {
+      const tags = cleanTags((await readJson(req)).tags, goalIds());
+      const found = await lib.mutate(async (items) => {
+        const it = items.find((x) => x.id === tg[1]);
+        if (!it) return false;
+        if (tags.length) it.tags = tags;
+        else delete it.tags;
+        return true;
+      });
+      if (found && tags.length) suggester.kick(); // a video that was waiting for a goal can get its cards now
+      return found ? sendJson(res, 200, { id: tg[1], tags }) : sendJson(res, 404, { error: 'Not found' });
     }
     const del = /^\/api\/media\/([\w-]+)$/.exec(p);
     if (del && req.method === 'DELETE') return await remove(res, del[1]);

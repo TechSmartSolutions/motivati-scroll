@@ -8,6 +8,10 @@ services:
     restart: unless-stopped
     ports:
       - "5183:5183"
+    environment:
+      # Optional. Put these in a .env file next to this one (see .env.example); never commit it.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-}
     volumes:
       - ${MEDIA_DIR:-./media-library}:/data
 

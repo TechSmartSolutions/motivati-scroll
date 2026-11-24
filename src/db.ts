@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import { defaultProgress, type Progress } from './progress';
 import type { Prompt } from './challenges';
+import { emptyToday, type TodayList } from './today';
 
 export interface Settings {
   /** show a challenge card after this many videos or images */
@@ -8,9 +9,13 @@ export interface Settings {
   /** completions needed at a level before moving up */
   levelThreshold: number;
   muted: boolean;
+  /** move to the next item automatically when a video ends */
+  autoAdvance: boolean;
+  /** Narrow the feed to this one goal (an active goal's id), or null for all active goals. Per device. */
+  feedGoal: string | null;
 }
 
-export const defaultSettings = (): Settings => ({ interval: 7, levelThreshold: 5, muted: false });
+export const defaultSettings = (): Settings => ({ interval: 7, levelThreshold: 5, muted: false, autoAdvance: true, feedGoal: null });
 
 interface Schema extends DBSchema {
   // Media now lives on the home server. These two stores are left from the on-device version
@@ -49,6 +54,10 @@ export const getSettings = async (): Promise<Settings> => {
 export const saveSettings = (s: Settings) => kvSet('settings', { ...s, v: SETTINGS_VERSION });
 export const getProgress = async (): Promise<Progress> => ({ ...defaultProgress(), ...(await kvGet<Partial<Progress>>('progress', {})) });
 export const saveProgress = (p: Progress) => kvSet('progress', p);
+export const getToday = async (): Promise<TodayList> => ({ ...emptyToday(), ...(await kvGet<Partial<TodayList>>('today', {})) });
+export const saveToday = (t: TodayList) => kvSet('today', t);
+export const getGoal =() => kvGet<string>('goal', '');
+export const saveGoal = (g: string) => kvSet('goal', g);
 export const getCustomPrompts = () => kvGet<Prompt[]>('customPrompts', []);
 export const saveCustomPrompts = (p: Prompt[]) => kvSet('customPrompts', p);
 export const getSinceChallenge = () => kvGet<number>('sinceChallenge', 0);
