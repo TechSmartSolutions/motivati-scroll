@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultProgress, recordDone, rollDay, stepLevel, streak, dateKey, MAX_LEVEL } from './progress';
+import { defaultProgress, fromSaved, recordDone, resetToday, rollDay, stepLevel, streak, dateKey, MAX_LEVEL } from './progress';
 
 describe('progress', () => {
   it('levels up after the threshold and resets the counter', () => {
@@ -10,7 +10,6 @@ describe('progress', () => {
     expect(r.leveledUp).toBe(true);
     expect(r.progress.level).toBe(2);
     expect(r.progress.doneAtLevel).toBe(0);
-    expect(r.progress.totalDone).toBe(5);
   });
 
   it('never exceeds the max level', () => {
@@ -46,7 +45,7 @@ describe('levels start over every day', () => {
     for (let i = 0; i < 7; i++) p = recordDone(p, 3, mon).progress;
     expect(p.level).toBe(3);
     const next = rollDay(p, tue);
-    expect(next).toMatchObject({ level: 1, doneAtLevel: 0, levelDay: dateKey(tue), totalDone: 7 });
+    expect(next).toMatchObject({ level: 1, doneAtLevel: 0, levelDay: dateKey(tue) });
     expect(next.days).toEqual(p.days);
   });
 
@@ -73,7 +72,44 @@ describe('levels start over every day', () => {
   });
 
   it('progress saved before this change (no levelDay) starts at level 1 today', () => {
-    const old = { level: 3, doneAtLevel: 4, totalDone: 20, days: {} } as unknown as ReturnType<typeof defaultProgress>;
-    expect(rollDay(old)).toMatchObject({ level: 1, doneAtLevel: 0, totalDone: 20 });
+    const old = { level: 3, doneAtLevel: 4, totalDone: 20, days: {} } as unknown as ReturnType<typeof defaultProgress>; // old saves still carry totalDone
+    expect(rollDay(old)).toMatchObject({ level: 1, doneAtLevel: 0 });
+  });
+});
+
+describe('resetToday', () => {
+  const mon = new Date(2026, 10, 23, 9);
+  const day = (offset: number) => dateKey(new Date(2026, 10, 23 + offset));
+
+  it('zeroes today only: level 1, counter 0, done today 0, earlier days stay', () => {
+    let p = { ...defaultProgress(), levelDay: dateKey(mon), days: { [day(-1)]: 4 } };
+    for (let i = 0; i < 7; i++) p = recordDone(p, 3, mon).progress;
+    expect(p.level).toBe(3);
+    const r = resetToday(p, mon);
+    expect(r).toMatchObject({ level: 1, doneAtLevel: 0, levelDay: dateKey(mon) });
+    expect(r.days).toEqual({ [day(-1)]: 4 });
+  });
+
+  it('is safe when nothing was done today', () => {
+    const p = { ...defaultProgress(), levelDay: dateKey(mon) };
+    expect(resetToday(p, mon)).toMatchObject({ level: 1, doneAtLevel: 0 });
+  });
+});
+
+describe('loading saved progress', () => {
+  it('an old save (no levelDay) is not treated as today: the old level and count are dropped', () => {
+    const loaded = fromSaved({ level: 3, doneAtLevel: 2, days: { '2026-11-25': 6 } });
+    expect(loaded.levelDay).toBe('');
+    expect(rollDay(loaded)).toMatchObject({ level: 1, doneAtLevel: 0, levelDay: dateKey() });
+    expect(rollDay(loaded).days).toEqual({ '2026-11-25': 6 });
+  });
+
+  it('a save made today keeps its level and count', () => {
+    const saved = { level: 2, doneAtLevel: 4, levelDay: dateKey(), days: { [dateKey()]: 19 } };
+    expect(rollDay(fromSaved(saved))).toMatchObject({ level: 2, doneAtLevel: 4 });
+  });
+
+  it('nothing saved starts fresh at level 1', () => {
+    expect(rollDay(fromSaved({}))).toMatchObject({ level: 1, doneAtLevel: 0 });
   });
 });

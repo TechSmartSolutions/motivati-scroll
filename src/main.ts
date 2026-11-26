@@ -5,7 +5,7 @@ import { Feed } from './feed';
 import { Panel } from './panel';
 import { getGoals, listAcceptedChallenges, saveGoals } from './library';
 import { availablePrompts, builtinPrompts, pickGoal, pickPrompt, withGoal, type GoalSet, type Prompt } from './challenges';
-import { recordDone, rollDay, stepLevel, type Progress } from './progress';
+import { recordDone, resetToday, rollDay, stepLevel, type Progress } from './progress';
 import { addItem, counts, hasItem, markDone, markDoneForPrompt, removeItem, rollover, type TodayList } from './today';
 
 async function boot(): Promise<void> {
@@ -123,6 +123,10 @@ async function boot(): Promise<void> {
       await db.saveSettings(settings);
       feed.applyMute();
       feed.applyPlayback();
+    },
+    resetToday: async () => {
+      progress = resetToday(progress);
+      await db.saveProgress(progress);
     },
     shiftLevel: async (d) => {
       progress = stepLevel(progress, d);

@@ -18,6 +18,7 @@ export interface PanelCtx {
   saveGoals(next: { goals: { id?: string; text: string; active: boolean; prompt: string }[] }): Promise<void>;
   updateSettings(patch: Partial<db.Settings>): Promise<void>;
   shiftLevel(delta: number): Promise<void>;
+  resetToday(): Promise<void>;
   addCustom(text: string, level: number): Promise<void>;
   removeCustom(id: string): Promise<void>;
   close(): void;
@@ -553,13 +554,18 @@ export class Panel {
       h('section', {},
         h('h3', {}, 'Your growth'),
         h('div', { class: 'stats' },
-          stat(`${p.level}`, `Level today · ${LEVEL_NAMES[p.level]}`),
-          stat(`${p.doneAtLevel}/${s.levelThreshold}`, p.level >= MAX_LEVEL ? 'At the top level today' : 'Today, to next level'),
-          stat(`${streak(p)}`, 'Day streak'),
-          stat(`${today}`, 'Done today'),
-          stat(`${p.totalDone}`, 'Total done')),
+          stat(`${p.level}`, `Level today · ${LEVEL_NAMES[p.level]}`, p.level / MAX_LEVEL),
+          stat(`${p.doneAtLevel}/${s.levelThreshold}`, p.level >= MAX_LEVEL ? 'At the top level today' : 'Today, to next level', p.doneAtLevel / s.levelThreshold),
+          stat(`${streak(p)}`, 'Day streak', streak(p) / 7),
+          stat(`${today}`, 'Done today', today / (s.levelThreshold * 2))),
         h('div', { class: 'row' },
-          h('button', { class: 'btn small', disabled: p.level <= 1, onclick: () => void this.ctx.shiftLevel(-1).then(() => this.render()) }, 'Easier')),
+          h('button', { class: 'btn small', disabled: p.level <= 1, onclick: () => void this.ctx.shiftLevel(-1).then(() => this.render()) }, 'Easier'),
+          h('button', {
+            class: 'btn ghost small',
+            onclick: () => {
+              if (confirm('Reset today back to zero? Level 1, no cards counted, and "Done today" back to 0. Earlier days and your streak history stay.')) void this.ctx.resetToday().then(() => this.render());
+            },
+          }, 'Reset today')),
         h('div', { class: 'muted' }, `Every day starts at level 1. Finish ${s.levelThreshold} cards at a level to unlock the next one. The count starts over tomorrow.`)),
 
       h('section', {},
@@ -599,4 +605,8 @@ export class Panel {
   }
 }
 
-const stat = (value: string, label: string) => h('div', { class: 'stat' }, h('b', {}, value), h('span', {}, label));
+/** `glow` is how far along the widget is, 0 to 1: it lights up as it fills, and pulses once it is full. */
+const stat = (value: string, label: string, glow = 0) => {
+  const g = Math.max(0, Math.min(1, glow));
+  return h('div', { class: `stat${g >= 1 ? ' full' : ''}`, style: `--glow: ${g.toFixed(2)}` }, h('b', {}, value), h('span', {}, label));
+};

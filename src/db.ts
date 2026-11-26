@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import { defaultProgress, type Progress } from './progress';
+import { fromSaved, type Progress } from './progress';
 import type { Prompt } from './challenges';
 import { emptyToday, type TodayList } from './today';
 
@@ -52,7 +52,7 @@ export const getSettings = async (): Promise<Settings> => {
   return { ...defaultSettings(), ...saved };
 };
 export const saveSettings = (s: Settings) => kvSet('settings', { ...s, v: SETTINGS_VERSION });
-export const getProgress = async (): Promise<Progress> => ({ ...defaultProgress(), ...(await kvGet<Partial<Progress>>('progress', {})) });
+export const getProgress = async (): Promise<Progress> => fromSaved(await kvGet<Partial<Progress>>('progress', {}));
 export const saveProgress = (p: Progress) => kvSet('progress', p);
 export const getToday = async (): Promise<TodayList> => ({ ...emptyToday(), ...(await kvGet<Partial<TodayList>>('today', {})) });
 export const saveToday = (t: TodayList) => kvSet('today', t);

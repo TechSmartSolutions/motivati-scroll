@@ -15,12 +15,17 @@ export interface Progress {
   doneAtLevel: number;
   /** The day (YYYY-MM-DD) that `level` and `doneAtLevel` belong to. */
   levelDay: string;
-  totalDone: number;
   /** completions per local day, keyed YYYY-MM-DD */
   days: Record<string, number>;
 }
 
-export const defaultProgress = (): Progress => ({ level: 1, doneAtLevel: 0, levelDay: dateKey(), totalDone: 0, days: {} });
+export const defaultProgress = (): Progress => ({ level: 1, doneAtLevel: 0, levelDay: dateKey(), days: {} });
+
+/**
+ * Progress read back from storage. A save made before levels reset daily has no `levelDay`; it must stay empty
+ * (not default to today) so the first load of a day starts over at level 1 instead of keeping an old count.
+ */
+export const fromSaved = (saved: Partial<Progress>): Progress => ({ ...defaultProgress(), ...saved, levelDay: saved.levelDay ?? '' });
 
 export function dateKey(d: Date = new Date()): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -47,7 +52,6 @@ export function recordDone(
   const key = dateKey(now);
   const next: Progress = {
     ...p,
-    totalDone: p.totalDone + 1,
     doneAtLevel: p.doneAtLevel + 1,
     days: { ...p.days, [key]: (p.days[key] ?? 0) + 1 },
   };
@@ -58,6 +62,13 @@ export function recordDone(
     leveledUp = true;
   }
   return { progress: next, leveledUp };
+}
+
+/** Put today's counters back to zero: level 1, nothing counted at this level, nothing done today. Earlier days stay. */
+export function resetToday(p: Progress, now: Date = new Date()): Progress {
+  const key = dateKey(now);
+  const { [key]: _removed, ...days } = p.days;
+  return { ...p, level: 1, doneAtLevel: 0, levelDay: key, days };
 }
 
 export function stepLevel(p: Progress, delta: number): Progress {
