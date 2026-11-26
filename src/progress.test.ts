@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { defaultProgress, recordDone, stepLevel, streak, dateKey, MAX_LEVEL } from './progress';
+import { defaultProgress, recordDone, rollDay, stepLevel, streak, dateKey, MAX_LEVEL } from './progress';
 
 describe('progress', () => {
   it('levels up after the threshold and resets the counter', () => {
@@ -33,5 +33,47 @@ describe('progress', () => {
     const yesterdayOnly = { ...defaultProgress(), days: { [day(-1)]: 1 } };
     expect(streak(yesterdayOnly, now)).toBe(1);
     expect(streak({ ...defaultProgress(), days: { [day(-3)]: 1 } }, now)).toBe(0);
+  });
+});
+
+describe('levels start over every day', () => {
+  const mon = new Date(2026, 10, 23, 9);
+  const monLate = new Date(2026, 10, 23, 23, 50);
+  const tue = new Date(2026, 10, 24, 7);
+
+  it('a new day goes back to level 1 with the counter at zero, keeping the totals', () => {
+    let p = { ...defaultProgress(), levelDay: dateKey(mon) };
+    for (let i = 0; i < 7; i++) p = recordDone(p, 3, mon).progress;
+    expect(p.level).toBe(3);
+    const next = rollDay(p, tue);
+    expect(next).toMatchObject({ level: 1, doneAtLevel: 0, levelDay: dateKey(tue), totalDone: 7 });
+    expect(next.days).toEqual(p.days);
+  });
+
+  it('the same day changes nothing', () => {
+    const p = { ...defaultProgress(), level: 3, doneAtLevel: 2, levelDay: dateKey(mon) };
+    expect(rollDay(p, monLate)).toBe(p);
+  });
+
+  it('the first card of a new day counts toward level 1, not the old level', () => {
+    const p = { ...defaultProgress(), level: 3, doneAtLevel: 2, levelDay: dateKey(mon) };
+    const r = recordDone(p, 15, tue);
+    expect(r.progress).toMatchObject({ level: 1, doneAtLevel: 1, levelDay: dateKey(tue) });
+    expect(r.leveledUp).toBe(false);
+  });
+
+  it('you must finish N at level 1 before level 2, then N at level 2 before level 3', () => {
+    let p = defaultProgress();
+    for (let i = 0; i < 14; i++) p = recordDone(p, 15).progress;
+    expect(p.level).toBe(1);
+    p = recordDone(p, 15).progress;
+    expect(p).toMatchObject({ level: 2, doneAtLevel: 0 });
+    for (let i = 0; i < 15; i++) p = recordDone(p, 15).progress;
+    expect(p.level).toBe(3);
+  });
+
+  it('progress saved before this change (no levelDay) starts at level 1 today', () => {
+    const old = { level: 3, doneAtLevel: 4, totalDone: 20, days: {} } as unknown as ReturnType<typeof defaultProgress>;
+    expect(rollDay(old)).toMatchObject({ level: 1, doneAtLevel: 0, totalDone: 20 });
   });
 });

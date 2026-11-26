@@ -5,12 +5,21 @@ import { Feed } from './feed';
 import { Panel } from './panel';
 import { getGoals, listAcceptedChallenges, saveGoals } from './library';
 import { availablePrompts, builtinPrompts, pickGoal, pickPrompt, withGoal, type GoalSet, type Prompt } from './challenges';
-import { recordDone, stepLevel, type Progress } from './progress';
+import { recordDone, rollDay, stepLevel, type Progress } from './progress';
 import { addItem, counts, hasItem, markDone, markDoneForPrompt, removeItem, rollover, type TodayList } from './today';
 
 async function boot(): Promise<void> {
   let settings = await db.getSettings();
-  let progress: Progress = await db.getProgress();
+  let progress: Progress = rollDay(await db.getProgress());
+  // Level and the level-up counter start over every day (also if the app stays open past midnight).
+  const todays = (): Progress => {
+    const r = rollDay(progress);
+    if (r !== progress) {
+      progress = r;
+      void db.saveProgress(progress);
+    }
+    return progress;
+  };
   let custom = await db.getCustomPrompts();
   // Session mute state starts from the saved preference; the speaker button changes it for this session.
   let muted = settings.muted;
@@ -60,10 +69,10 @@ async function boot(): Promise<void> {
       feed.applyMute();
     },
     nextPrompt: (excludeId, ok) => {
-      const p = pickPrompt(ok ? allPrompts().filter(ok) : allPrompts(), progress.level, excludeId);
+      const p = pickPrompt(ok ? allPrompts().filter(ok) : allPrompts(), todays().level, excludeId);
       return p && withGoal(p, pickGoal(goalSet) ?? '');
     },
-    currentLevel: () => progress.level,
+    currentLevel: () => todays().level,
     complete: async (p) => {
       const r = recordDone(progress, settings.levelThreshold);
       progress = r.progress;
@@ -91,7 +100,7 @@ async function boot(): Promise<void> {
 
   const panel: Panel = new Panel({
     settings: () => settings,
-    progress: () => progress,
+    progress: () => todays(),
     custom: () => custom,
     today: () => currentToday(),
     completeToday: async (id) => {
